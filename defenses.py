@@ -6,8 +6,9 @@ from torch.utils.data import DataLoader
 from scipy.stats import norm
 from statsmodels.stats.proportion import proportion_confint
 
+
 def free_adv_train(model, data_tr, criterion, optimizer, lr_scheduler, \
-                   eps, device, m=4, epochs=100, batch_size=128, dl_nw=10):
+                   eps, device, m=7, epochs=100, batch_size=128, dl_nw=10):
     """
     Free adversarial training, per Shafahi et al.'s work.
     Arguments:
@@ -32,20 +33,45 @@ def free_adv_train(model, data_tr, criterion, optimizer, lr_scheduler, \
                            shuffle=True,
                            pin_memory=True,
                            num_workers=dl_nw)
-                           
 
     # init delta (adv. perturbation) - FILL ME
-    
-
+    delta = torch.zeros_like(next(iter(loader_tr))[0], requires_grad=True).to(device)
     # total number of updates - FILL ME
-    
+    total_updates = int(np.ceil(epochs / m))
 
     # when to update lr
-    scheduler_step_iters = int(np.ceil(len(data_tr)/batch_size))
-
+    scheduler_step_iters = int(np.ceil(len(data_tr) / batch_size))
     # train - FILLE ME
-    
-    
+    model.train()
+    scheduler_counter = 0
+    for epoch in range(total_updates):
+        print("epoch: ", epoch)
+        for minibatch_idx, data in enumerate(loader_tr, 0):
+            X, Y = data[0].to(device), data[1].to(device)
+            for i in range(m):
+                x_adv = X + delta[:X.shape[0]]
+                x_adv.requires_grad_()
+                delta.requires_grad_()
+                outputs = model(x_adv)
+                loss = criterion(outputs, Y)
+                grad = torch.sign(torch.autograd.grad(loss.mean(), x_adv, retain_graph=True, create_graph=False)[0])
+                temp_delta = delta
+                delta = delta[:X.shape[0]] + eps * grad
+                delta = torch.clamp(delta, -eps, eps)
+                delta = delta.detach()
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                scheduler_counter += 1
+                # update lr
+                if scheduler_counter % scheduler_step_iters == 0:
+                    lr_scheduler.step()
+                # if it's the last batch, overwrite temp_delta[:X.shape[0]] with delta
+                if minibatch_idx == len(loader_tr) - 1:
+                    delta.requires_grad_(False)
+                    temp_delta.requires_grad_(False)
+                    temp_delta[:X.shape[0]] = delta
+                    delta = temp_delta
     # done
     return model
 
@@ -70,9 +96,15 @@ class SmoothedModel():
         array counting how many times each class was assigned the
         max confidence).
         """
-        # FILL ME
-        pass
-        
+        counts = np.zeros(self.model.num_classes)
+        for i in range(n):
+            # Classify input x under noise n times (with batch size equal to batch_size)
+            noise = torch.randn(batch_size, *x.shape).to(x.device) * self.sigma
+            outputs = self.model(x + noise)
+            top_class = torch.argmax(outputs, dim=1)
+            counts[top_class] += 1
+        return counts
+
     def certify(self, x, n0, n, alpha, batch_size):
         """
         Arguments:
@@ -88,16 +120,14 @@ class SmoothedModel():
         - prediction / top class (ABSTAIN in case of abstaining)
         - certified radius (0. in case of abstaining)
         """
-        
+
         # find prediction (top class c) - FILL ME
-        
-        
+
         # compute lower bound on p_c - FILL ME
-        
 
         # done
         return c, radius
-        
+
 
 class NeuralCleanse:
     """
@@ -134,10 +164,8 @@ class NeuralCleanse:
         - trigger: 
         """
         # randomly initialize mask and trigger in [0,1] - FILL ME
-        
 
         # run self.niters of SGD to find (potential) trigger and mask - FILL ME
-        
 
         # done
         return mask, trigger
